@@ -17,6 +17,11 @@
                 'src/gtest-typed-test.cc',
                 'src/gtest.cc',
             ],
+            'direct_dependent_settings': {
+                'include_dirs': [
+                    'include',
+                ],
+            },
             'dependencies': [
                 ':check-deps',
             ],
@@ -29,6 +34,9 @@
             ],
             'dependencies': [
                 ':check-deps',
+                ':gtest',
+            ],
+            'export_dependent_settings': [
                 ':gtest',
             ],
         },
