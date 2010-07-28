@@ -59,6 +59,7 @@
 #include <gtest/gtest-death-test.h>
 #include <gtest/gtest-message.h>
 #include <gtest/gtest-param-test.h>
+#include <gtest/gtest-printers.h>
 #include <gtest/gtest_prod.h>
 #include <gtest/gtest-test-part.h>
 #include <gtest/gtest-typed-test.h>
@@ -876,7 +877,7 @@ class TestEventListener {
   // Fired before the test starts.
   virtual void OnTestStart(const TestInfo& test_info) = 0;
 
-  // Fired after a failed assertion or a SUCCESS().
+  // Fired after a failed assertion or a SUCCEED() invocation.
   virtual void OnTestPartResult(const TestPartResult& test_part_result) = 0;
 
   // Fired after the test ends.
@@ -1206,30 +1207,6 @@ GTEST_API_ void InitGoogleTest(int* argc, wchar_t** argv);
 
 namespace internal {
 
-// These overloaded versions handle ::std::string and ::std::wstring.
-GTEST_API_ inline String FormatForFailureMessage(const ::std::string& str) {
-  return (Message() << '"' << str << '"').GetString();
-}
-
-#if GTEST_HAS_STD_WSTRING
-GTEST_API_ inline String FormatForFailureMessage(const ::std::wstring& wstr) {
-  return (Message() << "L\"" << wstr << '"').GetString();
-}
-#endif  // GTEST_HAS_STD_WSTRING
-
-// These overloaded versions handle ::string and ::wstring.
-#if GTEST_HAS_GLOBAL_STRING
-GTEST_API_ inline String FormatForFailureMessage(const ::string& str) {
-  return (Message() << '"' << str << '"').GetString();
-}
-#endif  // GTEST_HAS_GLOBAL_STRING
-
-#if GTEST_HAS_GLOBAL_WSTRING
-GTEST_API_ inline String FormatForFailureMessage(const ::wstring& wstr) {
-  return (Message() << "L\"" << wstr << '"').GetString();
-}
-#endif  // GTEST_HAS_GLOBAL_WSTRING
-
 // Formats a comparison assertion (e.g. ASSERT_EQ, EXPECT_LT, and etc)
 // operand to be used in a failure message.  The type (but not value)
 // of the other operand may affect the format.  This allows us to
@@ -1245,7 +1222,7 @@ GTEST_API_ inline String FormatForFailureMessage(const ::wstring& wstr) {
 template <typename T1, typename T2>
 String FormatForComparisonFailureMessage(const T1& value,
                                          const T2& /* other_operand */) {
-  return FormatForFailureMessage(value);
+  return PrintToString(value);
 }
 
 // The helper function for {ASSERT|EXPECT}_EQ.
@@ -1650,11 +1627,29 @@ const T* TestWithParam<T>::parameter_ = NULL;
 // Generates a nonfatal failure with a generic message.
 #define ADD_FAILURE() GTEST_NONFATAL_FAILURE_("Failed")
 
+// Generates a nonfatal failure at the given source file location with
+// a generic message.
+#define ADD_FAILURE_AT(file, line) \
+  GTEST_MESSAGE_AT_(file, line, "Failed", \
+                    ::testing::TestPartResult::kNonFatalFailure)
+
 // Generates a fatal failure with a generic message.
-#define FAIL() GTEST_FATAL_FAILURE_("Failed")
+#define GTEST_FAIL() GTEST_FATAL_FAILURE_("Failed")
+
+// Define this macro to 1 to omit the definition of FAIL(), which is a
+// generic name and clashes with some other libraries.
+#if !GTEST_DONT_DEFINE_FAIL
+#define FAIL() GTEST_FAIL()
+#endif
 
 // Generates a success with a generic message.
-#define SUCCEED() GTEST_SUCCESS_("Succeeded")
+#define GTEST_SUCCEED() GTEST_SUCCESS_("Succeeded")
+
+// Define this macro to 1 to omit the definition of SUCCEED(), which
+// is a generic name and clashes with some other libraries.
+#if !GTEST_DONT_DEFINE_SUCCEED
+#define SUCCEED() GTEST_SUCCEED()
+#endif
 
 // Macros for testing exceptions.
 //
@@ -1914,17 +1909,6 @@ GTEST_API_ AssertionResult DoubleLE(const char* expr1, const char* expr2,
   ::testing::internal::ScopedTrace GTEST_CONCAT_TOKEN_(gtest_trace_, __LINE__)(\
     __FILE__, __LINE__, ::testing::Message() << (message))
 
-namespace internal {
-
-// This template is declared, but intentionally undefined.
-template <typename T1, typename T2>
-struct StaticAssertTypeEqHelper;
-
-template <typename T>
-struct StaticAssertTypeEqHelper<T, T> {};
-
-}  // namespace internal
-
 // Compile-time assertion for type equality.
 // StaticAssertTypeEq<type1, type2>() compiles iff type1 and type2 are
 // the same type.  The value it returns is not interesting.
@@ -1957,7 +1941,7 @@ struct StaticAssertTypeEqHelper<T, T> {};
 // to cause a compiler error.
 template <typename T1, typename T2>
 bool StaticAssertTypeEq() {
-  internal::StaticAssertTypeEqHelper<T1, T2>();
+  (void)internal::StaticAssertTypeEqHelper<T1, T2>();
   return true;
 }
 
@@ -1986,10 +1970,15 @@ bool StaticAssertTypeEq() {
 // code.  GetTestTypeId() is guaranteed to always return the same
 // value, as it always calls GetTypeId<>() from the Google Test
 // framework.
-#define TEST(test_case_name, test_name)\
+#define GTEST_TEST(test_case_name, test_name)\
   GTEST_TEST_(test_case_name, test_name, \
               ::testing::Test, ::testing::internal::GetTestTypeId())
 
+// Define this macro to 1 to omit the definition of TEST(), which
+// is a generic name and clashes with some other libraries.
+#if !GTEST_DONT_DEFINE_TEST
+#define TEST(test_case_name, test_name) GTEST_TEST(test_case_name, test_name)
+#endif
 
 // Defines a test that uses a test fixture.
 //

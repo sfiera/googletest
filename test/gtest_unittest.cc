@@ -132,23 +132,28 @@ using testing::Message;
 using testing::ScopedFakeTestPartResultReporter;
 using testing::StaticAssertTypeEq;
 using testing::Test;
-using testing::TestEventListeners;
 using testing::TestCase;
+using testing::TestEventListeners;
 using testing::TestPartResult;
 using testing::TestPartResultArray;
 using testing::TestProperty;
 using testing::TestResult;
 using testing::UnitTest;
 using testing::kMaxStackTraceDepth;
+using testing::internal::AddReference;
 using testing::internal::AlwaysFalse;
 using testing::internal::AlwaysTrue;
 using testing::internal::AppendUserMessage;
+using testing::internal::ArrayAwareFind;
+using testing::internal::ArrayEq;
 using testing::internal::CodePointToUtf8;
+using testing::internal::CompileAssertTypesEqual;
+using testing::internal::CopyArray;
 using testing::internal::CountIf;
 using testing::internal::EqFailure;
 using testing::internal::FloatingPoint;
-using testing::internal::FormatTimeInMillisAsSeconds;
 using testing::internal::ForEach;
+using testing::internal::FormatTimeInMillisAsSeconds;
 using testing::internal::GTestFlagSaver;
 using testing::internal::GetCurrentOsStackTraceExceptTop;
 using testing::internal::GetElementOr;
@@ -157,21 +162,32 @@ using testing::internal::GetRandomSeedFromFlag;
 using testing::internal::GetTestTypeId;
 using testing::internal::GetTypeId;
 using testing::internal::GetUnitTestImpl;
+using testing::internal::ImplicitlyConvertible;
 using testing::internal::Int32;
 using testing::internal::Int32FromEnvOrDie;
+using testing::internal::IsAProtocolMessage;
+using testing::internal::IsContainer;
+using testing::internal::IsContainerTest;
+using testing::internal::IsNotContainer;
+using testing::internal::NativeArray;
 using testing::internal::ParseInt32Flag;
+using testing::internal::RemoveConst;
+using testing::internal::RemoveReference;
 using testing::internal::ShouldRunTestOnShard;
 using testing::internal::ShouldShard;
 using testing::internal::ShouldUseColor;
 using testing::internal::Shuffle;
 using testing::internal::ShuffleRange;
+using testing::internal::SkipPrefix;
 using testing::internal::StreamableToString;
 using testing::internal::String;
 using testing::internal::TestEventListenersAccessor;
 using testing::internal::TestResultAccessor;
 using testing::internal::UInt32;
 using testing::internal::WideStringToUtf8;
+using testing::internal::kCopy;
 using testing::internal::kMaxRandomSeed;
+using testing::internal::kReference;
 using testing::internal::kTestTypeIdInGoogleTest;
 using testing::internal::scoped_ptr;
 
@@ -183,6 +199,10 @@ using testing::internal::GetCapturedStdout;
 #if GTEST_IS_THREADSAFE
 using testing::internal::ThreadWithParam;
 #endif
+
+#if GTEST_HAS_PROTOBUF_
+using ::testing::internal::TestMessage;
+#endif  // GTEST_HAS_PROTOBUF_
 
 class TestingVector : public std::vector<int> {
 };
@@ -4373,6 +4393,21 @@ TEST(MacroTest, ADD_FAILURE) {
   EXPECT_FALSE(aborted);
 }
 
+// Tests ADD_FAILURE_AT.
+TEST(MacroTest, ADD_FAILURE_AT) {
+  // Verifies that ADD_FAILURE_AT does generate a nonfatal failure and
+  // the failure message contains the user-streamed part.
+  EXPECT_NONFATAL_FAILURE(ADD_FAILURE_AT("foo.cc", 42) << "Wrong!", "Wrong!");
+
+  // Verifies that the user-streamed part is optional.
+  EXPECT_NONFATAL_FAILURE(ADD_FAILURE_AT("foo.cc", 42), "Failed");
+
+  // Unfortunately, we cannot verify that the failure message contains
+  // the right file path and line number the same way, as
+  // EXPECT_NONFATAL_FAILURE() doesn't get to see the file path and
+  // line number.  Instead, we do that in gtest_output_test_.cc.
+}
+
 // Tests FAIL.
 TEST(MacroTest, FAIL) {
   EXPECT_FATAL_FAILURE(FAIL(),
@@ -4630,6 +4665,65 @@ TEST(EqAssertionTest, OtherPointer) {
   EXPECT_FATAL_FAILURE(ASSERT_EQ(static_cast<const int*>(NULL),
                                  reinterpret_cast<const int*>(0x1234)),
                        "0x1234");
+}
+
+// A class that supports binary comparison operators but not streaming.
+class UnprintableChar {
+ public:
+  explicit UnprintableChar(char ch) : char_(ch) {}
+
+  bool operator==(const UnprintableChar& rhs) const {
+    return char_ == rhs.char_;
+  }
+  bool operator!=(const UnprintableChar& rhs) const {
+    return char_ != rhs.char_;
+  }
+  bool operator<(const UnprintableChar& rhs) const {
+    return char_ < rhs.char_;
+  }
+  bool operator<=(const UnprintableChar& rhs) const {
+    return char_ <= rhs.char_;
+  }
+  bool operator>(const UnprintableChar& rhs) const {
+    return char_ > rhs.char_;
+  }
+  bool operator>=(const UnprintableChar& rhs) const {
+    return char_ >= rhs.char_;
+  }
+
+ private:
+  char char_;
+};
+
+// Tests that ASSERT_EQ() and friends don't require the arguments to
+// be printable.
+TEST(ComparisonAssertionTest, AcceptsUnprintableArgs) {
+  const UnprintableChar x('x'), y('y');
+  ASSERT_EQ(x, x);
+  EXPECT_NE(x, y);
+  ASSERT_LT(x, y);
+  EXPECT_LE(x, y);
+  ASSERT_GT(y, x);
+  EXPECT_GE(x, x);
+
+  EXPECT_NONFATAL_FAILURE(EXPECT_EQ(x, y), "1-byte object <78>");
+  EXPECT_NONFATAL_FAILURE(EXPECT_EQ(x, y), "1-byte object <79>");
+  EXPECT_NONFATAL_FAILURE(EXPECT_LT(y, y), "1-byte object <79>");
+  EXPECT_NONFATAL_FAILURE(EXPECT_GT(x, y), "1-byte object <78>");
+  EXPECT_NONFATAL_FAILURE(EXPECT_GT(x, y), "1-byte object <79>");
+
+  // Code tested by EXPECT_FATAL_FAILURE cannot reference local
+  // variables, so we have to write UnprintableChar('x') instead of x.
+  EXPECT_FATAL_FAILURE(ASSERT_NE(UnprintableChar('x'), UnprintableChar('x')),
+                       "1-byte object <78>");
+  EXPECT_FATAL_FAILURE(ASSERT_LE(UnprintableChar('y'), UnprintableChar('x')),
+                       "1-byte object <78>");
+  EXPECT_FATAL_FAILURE(ASSERT_LE(UnprintableChar('y'), UnprintableChar('x')),
+                       "1-byte object <79>");
+  EXPECT_FATAL_FAILURE(ASSERT_GE(UnprintableChar('x'), UnprintableChar('y')),
+                       "1-byte object <78>");
+  EXPECT_FATAL_FAILURE(ASSERT_GE(UnprintableChar('x'), UnprintableChar('y')),
+                       "1-byte object <79>");
 }
 
 // Tests the FRIEND_TEST macro.
@@ -6264,7 +6358,16 @@ TEST(ColoredOutputTest, UsesColorsWhenTermSupportsColors) {
   SetEnv("TERM", "xterm-color");  // TERM supports colors.
   EXPECT_TRUE(ShouldUseColor(true));  // Stdout is a TTY.
 
+  SetEnv("TERM", "xterm-256color");  // TERM supports colors.
+  EXPECT_TRUE(ShouldUseColor(true));  // Stdout is a TTY.
+
+  SetEnv("TERM", "screen");  // TERM supports colors.
+  EXPECT_TRUE(ShouldUseColor(true));  // Stdout is a TTY.
+
   SetEnv("TERM", "linux");  // TERM supports colors.
+  EXPECT_TRUE(ShouldUseColor(true));  // Stdout is a TTY.
+
+  SetEnv("TERM", "cygwin");  // TERM supports colors.
   EXPECT_TRUE(ShouldUseColor(true));  // Stdout is a TTY.
 #endif  // GTEST_OS_WINDOWS
 }
@@ -6702,4 +6805,374 @@ TEST(EventListenerTest, RemovingDefaultXmlGeneratorWorks) {
   // Destroying the list should not affect the listener now, too.
   EXPECT_FALSE(is_destroyed);
   delete listener;
+}
+
+// Sanity tests to ensure that the alternative, verbose spellings of
+// some of the macros work.  We don't test them thoroughly as that
+// would be quite involved.  Since their implementations are
+// straightforward, and they are rarely used, we'll just rely on the
+// users to tell us when they are broken.
+GTEST_TEST(AlternativeNameTest, Works) {  // GTEST_TEST is the same as TEST.
+  GTEST_SUCCEED() << "OK";  // GTEST_SUCCEED is the same as SUCCEED.
+
+  // GTEST_FAIL is the same as FAIL.
+  EXPECT_FATAL_FAILURE(GTEST_FAIL() << "An expected failure",
+                       "An expected failure");
+}
+
+// Tests for internal utilities necessary for implementation of the universal
+// printing.
+// TODO(vladl@google.com): Find a better home for them.
+
+class ConversionHelperBase {};
+class ConversionHelperDerived : public ConversionHelperBase {};
+
+// Tests that IsAProtocolMessage<T>::value is a compile-time constant.
+TEST(IsAProtocolMessageTest, ValueIsCompileTimeConstant) {
+  GTEST_COMPILE_ASSERT_(IsAProtocolMessage<ProtocolMessage>::value,
+                        const_true);
+  GTEST_COMPILE_ASSERT_(!IsAProtocolMessage<int>::value, const_false);
+}
+
+// Tests that IsAProtocolMessage<T>::value is true when T is
+// ProtocolMessage or a sub-class of it.
+TEST(IsAProtocolMessageTest, ValueIsTrueWhenTypeIsAProtocolMessage) {
+  EXPECT_TRUE(IsAProtocolMessage< ::proto2::Message>::value);
+  EXPECT_TRUE(IsAProtocolMessage<ProtocolMessage>::value);
+#if GTEST_HAS_PROTOBUF_
+  EXPECT_TRUE(IsAProtocolMessage<const TestMessage>::value);
+#endif  // GTEST_HAS_PROTOBUF_
+}
+
+// Tests that IsAProtocolMessage<T>::value is false when T is neither
+// ProtocolMessage nor a sub-class of it.
+TEST(IsAProtocolMessageTest, ValueIsFalseWhenTypeIsNotAProtocolMessage) {
+  EXPECT_FALSE(IsAProtocolMessage<int>::value);
+  EXPECT_FALSE(IsAProtocolMessage<const ConversionHelperBase>::value);
+}
+
+// Tests that CompileAssertTypesEqual compiles when the type arguments are
+// equal.
+TEST(CompileAssertTypesEqual, CompilesWhenTypesAreEqual) {
+  CompileAssertTypesEqual<void, void>();
+  CompileAssertTypesEqual<int*, int*>();
+}
+
+// Tests that RemoveReference does not affect non-reference types.
+TEST(RemoveReferenceTest, DoesNotAffectNonReferenceType) {
+  CompileAssertTypesEqual<int, RemoveReference<int>::type>();
+  CompileAssertTypesEqual<const char, RemoveReference<const char>::type>();
+}
+
+// Tests that RemoveReference removes reference from reference types.
+TEST(RemoveReferenceTest, RemovesReference) {
+  CompileAssertTypesEqual<int, RemoveReference<int&>::type>();
+  CompileAssertTypesEqual<const char, RemoveReference<const char&>::type>();
+}
+
+// Tests GTEST_REMOVE_REFERENCE_.
+
+template <typename T1, typename T2>
+void TestGTestRemoveReference() {
+  CompileAssertTypesEqual<T1, GTEST_REMOVE_REFERENCE_(T2)>();
+}
+
+TEST(RemoveReferenceTest, MacroVersion) {
+  TestGTestRemoveReference<int, int>();
+  TestGTestRemoveReference<const char, const char&>();
+}
+
+
+// Tests that RemoveConst does not affect non-const types.
+TEST(RemoveConstTest, DoesNotAffectNonConstType) {
+  CompileAssertTypesEqual<int, RemoveConst<int>::type>();
+  CompileAssertTypesEqual<char&, RemoveConst<char&>::type>();
+}
+
+// Tests that RemoveConst removes const from const types.
+TEST(RemoveConstTest, RemovesConst) {
+  CompileAssertTypesEqual<int, RemoveConst<const int>::type>();
+  CompileAssertTypesEqual<char[2], RemoveConst<const char[2]>::type>();
+  CompileAssertTypesEqual<char[2][3], RemoveConst<const char[2][3]>::type>();
+}
+
+// Tests GTEST_REMOVE_CONST_.
+
+template <typename T1, typename T2>
+void TestGTestRemoveConst() {
+  CompileAssertTypesEqual<T1, GTEST_REMOVE_CONST_(T2)>();
+}
+
+TEST(RemoveConstTest, MacroVersion) {
+  TestGTestRemoveConst<int, int>();
+  TestGTestRemoveConst<double&, double&>();
+  TestGTestRemoveConst<char, const char>();
+}
+
+// Tests GTEST_REMOVE_REFERENCE_AND_CONST_.
+
+template <typename T1, typename T2>
+void TestGTestRemoveReferenceAndConst() {
+  CompileAssertTypesEqual<T1, GTEST_REMOVE_REFERENCE_AND_CONST_(T2)>();
+}
+
+TEST(RemoveReferenceToConstTest, Works) {
+  TestGTestRemoveReferenceAndConst<int, int>();
+  TestGTestRemoveReferenceAndConst<double, double&>();
+  TestGTestRemoveReferenceAndConst<char, const char>();
+  TestGTestRemoveReferenceAndConst<char, const char&>();
+  TestGTestRemoveReferenceAndConst<const char*, const char*>();
+}
+
+// Tests that AddReference does not affect reference types.
+TEST(AddReferenceTest, DoesNotAffectReferenceType) {
+  CompileAssertTypesEqual<int&, AddReference<int&>::type>();
+  CompileAssertTypesEqual<const char&, AddReference<const char&>::type>();
+}
+
+// Tests that AddReference adds reference to non-reference types.
+TEST(AddReferenceTest, AddsReference) {
+  CompileAssertTypesEqual<int&, AddReference<int>::type>();
+  CompileAssertTypesEqual<const char&, AddReference<const char>::type>();
+}
+
+// Tests GTEST_ADD_REFERENCE_.
+
+template <typename T1, typename T2>
+void TestGTestAddReference() {
+  CompileAssertTypesEqual<T1, GTEST_ADD_REFERENCE_(T2)>();
+}
+
+TEST(AddReferenceTest, MacroVersion) {
+  TestGTestAddReference<int&, int>();
+  TestGTestAddReference<const char&, const char&>();
+}
+
+// Tests GTEST_REFERENCE_TO_CONST_.
+
+template <typename T1, typename T2>
+void TestGTestReferenceToConst() {
+  CompileAssertTypesEqual<T1, GTEST_REFERENCE_TO_CONST_(T2)>();
+}
+
+TEST(GTestReferenceToConstTest, Works) {
+  TestGTestReferenceToConst<const char&, char>();
+  TestGTestReferenceToConst<const int&, const int>();
+  TestGTestReferenceToConst<const double&, double>();
+  TestGTestReferenceToConst<const String&, const String&>();
+}
+
+// Tests that ImplicitlyConvertible<T1, T2>::value is a compile-time constant.
+TEST(ImplicitlyConvertibleTest, ValueIsCompileTimeConstant) {
+  GTEST_COMPILE_ASSERT_((ImplicitlyConvertible<int, int>::value), const_true);
+  GTEST_COMPILE_ASSERT_((!ImplicitlyConvertible<void*, int*>::value),
+                        const_false);
+}
+
+// Tests that ImplicitlyConvertible<T1, T2>::value is true when T1 can
+// be implicitly converted to T2.
+TEST(ImplicitlyConvertibleTest, ValueIsTrueWhenConvertible) {
+  EXPECT_TRUE((ImplicitlyConvertible<int, double>::value));
+  EXPECT_TRUE((ImplicitlyConvertible<double, int>::value));
+  EXPECT_TRUE((ImplicitlyConvertible<int*, void*>::value));
+  EXPECT_TRUE((ImplicitlyConvertible<int*, const int*>::value));
+  EXPECT_TRUE((ImplicitlyConvertible<ConversionHelperDerived&,
+                                     const ConversionHelperBase&>::value));
+  EXPECT_TRUE((ImplicitlyConvertible<const ConversionHelperBase,
+                                     ConversionHelperBase>::value));
+}
+
+// Tests that ImplicitlyConvertible<T1, T2>::value is false when T1
+// cannot be implicitly converted to T2.
+TEST(ImplicitlyConvertibleTest, ValueIsFalseWhenNotConvertible) {
+  EXPECT_FALSE((ImplicitlyConvertible<double, int*>::value));
+  EXPECT_FALSE((ImplicitlyConvertible<void*, int*>::value));
+  EXPECT_FALSE((ImplicitlyConvertible<const int*, int*>::value));
+  EXPECT_FALSE((ImplicitlyConvertible<ConversionHelperBase&,
+                                      ConversionHelperDerived&>::value));
+}
+
+// Tests IsContainerTest.
+
+class NonContainer {};
+
+TEST(IsContainerTestTest, WorksForNonContainer) {
+  EXPECT_EQ(sizeof(IsNotContainer), sizeof(IsContainerTest<int>(0)));
+  EXPECT_EQ(sizeof(IsNotContainer), sizeof(IsContainerTest<char[5]>(0)));
+  EXPECT_EQ(sizeof(IsNotContainer), sizeof(IsContainerTest<NonContainer>(0)));
+}
+
+TEST(IsContainerTestTest, WorksForContainer) {
+  EXPECT_EQ(sizeof(IsContainer),
+            sizeof(IsContainerTest<std::vector<bool> >(0)));
+  EXPECT_EQ(sizeof(IsContainer),
+            sizeof(IsContainerTest<std::map<int, double> >(0)));
+}
+
+// Tests ArrayEq().
+
+TEST(ArrayEqTest, WorksForDegeneratedArrays) {
+  EXPECT_TRUE(ArrayEq(5, 5L));
+  EXPECT_FALSE(ArrayEq('a', 0));
+}
+
+TEST(ArrayEqTest, WorksForOneDimensionalArrays) {
+  const int a[] = { 0, 1 };
+  long b[] = { 0, 1 };
+  EXPECT_TRUE(ArrayEq(a, b));
+  EXPECT_TRUE(ArrayEq(a, 2, b));
+
+  b[0] = 2;
+  EXPECT_FALSE(ArrayEq(a, b));
+  EXPECT_FALSE(ArrayEq(a, 1, b));
+}
+
+TEST(ArrayEqTest, WorksForTwoDimensionalArrays) {
+  const char a[][3] = { "hi", "lo" };
+  const char b[][3] = { "hi", "lo" };
+  const char c[][3] = { "hi", "li" };
+
+  EXPECT_TRUE(ArrayEq(a, b));
+  EXPECT_TRUE(ArrayEq(a, 2, b));
+
+  EXPECT_FALSE(ArrayEq(a, c));
+  EXPECT_FALSE(ArrayEq(a, 2, c));
+}
+
+// Tests ArrayAwareFind().
+
+TEST(ArrayAwareFindTest, WorksForOneDimensionalArray) {
+  const char a[] = "hello";
+  EXPECT_EQ(a + 4, ArrayAwareFind(a, a + 5, 'o'));
+  EXPECT_EQ(a + 5, ArrayAwareFind(a, a + 5, 'x'));
+}
+
+TEST(ArrayAwareFindTest, WorksForTwoDimensionalArray) {
+  int a[][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 } };
+  const int b[2] = { 2, 3 };
+  EXPECT_EQ(a + 1, ArrayAwareFind(a, a + 3, b));
+
+  const int c[2] = { 6, 7 };
+  EXPECT_EQ(a + 3, ArrayAwareFind(a, a + 3, c));
+}
+
+// Tests CopyArray().
+
+TEST(CopyArrayTest, WorksForDegeneratedArrays) {
+  int n = 0;
+  CopyArray('a', &n);
+  EXPECT_EQ('a', n);
+}
+
+TEST(CopyArrayTest, WorksForOneDimensionalArrays) {
+  const char a[3] = "hi";
+  int b[3];
+  CopyArray(a, &b);
+  EXPECT_TRUE(ArrayEq(a, b));
+
+  int c[3];
+  CopyArray(a, 3, c);
+  EXPECT_TRUE(ArrayEq(a, c));
+}
+
+TEST(CopyArrayTest, WorksForTwoDimensionalArrays) {
+  const int a[2][3] = { { 0, 1, 2 }, { 3, 4, 5 } };
+  int b[2][3];
+  CopyArray(a, &b);
+  EXPECT_TRUE(ArrayEq(a, b));
+
+  int c[2][3];
+  CopyArray(a, 2, c);
+  EXPECT_TRUE(ArrayEq(a, c));
+}
+
+// Tests NativeArray.
+
+TEST(NativeArrayTest, ConstructorFromArrayWorks) {
+  const int a[3] = { 0, 1, 2 };
+  NativeArray<int> na(a, 3, kReference);
+  EXPECT_EQ(3U, na.size());
+  EXPECT_EQ(a, na.begin());
+}
+
+TEST(NativeArrayTest, CreatesAndDeletesCopyOfArrayWhenAskedTo) {
+  typedef int Array[2];
+  Array* a = new Array[1];
+  (*a)[0] = 0;
+  (*a)[1] = 1;
+  NativeArray<int> na(*a, 2, kCopy);
+  EXPECT_NE(*a, na.begin());
+  delete[] a;
+  EXPECT_EQ(0, na.begin()[0]);
+  EXPECT_EQ(1, na.begin()[1]);
+
+  // We rely on the heap checker to verify that na deletes the copy of
+  // array.
+}
+
+TEST(NativeArrayTest, TypeMembersAreCorrect) {
+  StaticAssertTypeEq<char, NativeArray<char>::value_type>();
+  StaticAssertTypeEq<int[2], NativeArray<int[2]>::value_type>();
+
+  StaticAssertTypeEq<const char*, NativeArray<char>::const_iterator>();
+  StaticAssertTypeEq<const bool(*)[2], NativeArray<bool[2]>::const_iterator>();
+}
+
+TEST(NativeArrayTest, MethodsWork) {
+  const int a[3] = { 0, 1, 2 };
+  NativeArray<int> na(a, 3, kCopy);
+  ASSERT_EQ(3U, na.size());
+  EXPECT_EQ(3, na.end() - na.begin());
+
+  NativeArray<int>::const_iterator it = na.begin();
+  EXPECT_EQ(0, *it);
+  ++it;
+  EXPECT_EQ(1, *it);
+  it++;
+  EXPECT_EQ(2, *it);
+  ++it;
+  EXPECT_EQ(na.end(), it);
+
+  EXPECT_TRUE(na == na);
+
+  NativeArray<int> na2(a, 3, kReference);
+  EXPECT_TRUE(na == na2);
+
+  const int b1[3] = { 0, 1, 1 };
+  const int b2[4] = { 0, 1, 2, 3 };
+  EXPECT_FALSE(na == NativeArray<int>(b1, 3, kReference));
+  EXPECT_FALSE(na == NativeArray<int>(b2, 4, kCopy));
+}
+
+TEST(NativeArrayTest, WorksForTwoDimensionalArray) {
+  const char a[2][3] = { "hi", "lo" };
+  NativeArray<char[3]> na(a, 2, kReference);
+  ASSERT_EQ(2U, na.size());
+  EXPECT_EQ(a, na.begin());
+}
+
+// Tests SkipPrefix().
+
+TEST(SkipPrefixTest, SkipsWhenPrefixMatches) {
+  const char* const str = "hello";
+
+  const char* p = str;
+  EXPECT_TRUE(SkipPrefix("", &p));
+  EXPECT_EQ(str, p);
+
+  p = str;
+  EXPECT_TRUE(SkipPrefix("hell", &p));
+  EXPECT_EQ(str + 4, p);
+}
+
+TEST(SkipPrefixTest, DoesNotSkipWhenPrefixDoesNotMatch) {
+  const char* const str = "world";
+
+  const char* p = str;
+  EXPECT_FALSE(SkipPrefix("W", &p));
+  EXPECT_EQ(str, p);
+
+  p = str;
+  EXPECT_FALSE(SkipPrefix("world!", &p));
+  EXPECT_EQ(str, p);
 }

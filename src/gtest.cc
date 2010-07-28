@@ -918,48 +918,6 @@ Message& Message::operator <<(const ::wstring& wstr) {
 }
 #endif  // GTEST_HAS_GLOBAL_WSTRING
 
-namespace internal {
-
-// Formats a value to be used in a failure message.
-
-// For a char value, we print it as a C++ char literal and as an
-// unsigned integer (both in decimal and in hexadecimal).
-String FormatForFailureMessage(char ch) {
-  const unsigned int ch_as_uint = ch;
-  // A String object cannot contain '\0', so we print "\\0" when ch is
-  // '\0'.
-  return String::Format("'%s' (%u, 0x%X)",
-                        ch ? String::Format("%c", ch).c_str() : "\\0",
-                        ch_as_uint, ch_as_uint);
-}
-
-// For a wchar_t value, we print it as a C++ wchar_t literal and as an
-// unsigned integer (both in decimal and in hexidecimal).
-String FormatForFailureMessage(wchar_t wchar) {
-  // The C++ standard doesn't specify the exact size of the wchar_t
-  // type.  It just says that it shall have the same size as another
-  // integral type, called its underlying type.
-  //
-  // Therefore, in order to print a wchar_t value in the numeric form,
-  // we first convert it to the largest integral type (UInt64) and
-  // then print the converted value.
-  //
-  // We use streaming to print the value as "%llu" doesn't work
-  // correctly with MSVC 7.1.
-  const UInt64 wchar_as_uint64 = wchar;
-  Message msg;
-  // A String object cannot contain '\0', so we print "\\0" when wchar is
-  // L'\0'.
-  char buffer[32];  // CodePointToUtf8 requires a buffer that big.
-  msg << "L'"
-      << (wchar ? CodePointToUtf8(static_cast<UInt32>(wchar), buffer) : "\\0")
-      << "' (" << wchar_as_uint64 << ", 0x" << ::std::setbase(16)
-      << wchar_as_uint64 << ")";
-  return msg.GetString();
-}
-
-}  // namespace internal
-
 // AssertionResult constructors.
 // Used in EXPECT_TRUE/FALSE(assertion_result).
 AssertionResult::AssertionResult(const AssertionResult& other)
@@ -2504,9 +2462,9 @@ static const char * TestPartResultTypeToString(TestPartResult::Type type) {
 #else
       return "Failure\n";
 #endif
+    default:
+      return "Unknown result type";
   }
-
-  return "Unknown result type";
 }
 
 // Prints a TestPartResult to a String.
@@ -2592,6 +2550,7 @@ bool ShouldUseColor(bool stdout_is_tty) {
         String::CStringEquals(term, "xterm") ||
         String::CStringEquals(term, "xterm-color") ||
         String::CStringEquals(term, "xterm-256color") ||
+        String::CStringEquals(term, "screen") ||
         String::CStringEquals(term, "linux") ||
         String::CStringEquals(term, "cygwin");
     return stdout_is_tty && term_supports_color;
@@ -2655,6 +2614,19 @@ void ColoredPrintf(GTestColor color, const char* fmt, ...) {
   printf("\033[m");  // Resets the terminal to default.
 #endif  // GTEST_OS_WINDOWS && !GTEST_OS_WINDOWS_MOBILE
   va_end(args);
+}
+
+void PrintFullTestCommentIfPresent(const TestInfo& test_info) {
+  const char* const comment = test_info.comment();
+  const char* const test_case_comment = test_info.test_case_comment();
+
+  if (test_case_comment[0] != '\0' || comment[0] != '\0') {
+    printf(", where %s", test_case_comment);
+    if (test_case_comment[0] != '\0' && comment[0] != '\0') {
+      printf(" and ");
+    }
+    printf("%s", comment);
+  }
 }
 
 // This class implements the TestEventListener interface.
@@ -2747,11 +2719,7 @@ void PrettyUnitTestResultPrinter::OnTestCaseStart(const TestCase& test_case) {
 void PrettyUnitTestResultPrinter::OnTestStart(const TestInfo& test_info) {
   ColoredPrintf(COLOR_GREEN,  "[ RUN      ] ");
   PrintTestName(test_case_name_.c_str(), test_info.name());
-  if (test_info.comment()[0] == '\0') {
-    printf("\n");
-  } else {
-    printf(", where %s\n", test_info.comment());
-  }
+  printf("\n");
   fflush(stdout);
 }
 
@@ -2774,6 +2742,9 @@ void PrettyUnitTestResultPrinter::OnTestEnd(const TestInfo& test_info) {
     ColoredPrintf(COLOR_RED, "[  FAILED  ] ");
   }
   PrintTestName(test_case_name_.c_str(), test_info.name());
+  if (test_info.result()->Failed())
+    PrintFullTestCommentIfPresent(test_info);
+
   if (GTEST_FLAG(print_time)) {
     printf(" (%s ms)\n", internal::StreamableToString(
            test_info.result()->elapsed_time()).c_str());
@@ -2822,15 +2793,8 @@ void PrettyUnitTestResultPrinter::PrintFailedTests(const UnitTest& unit_test) {
       }
       ColoredPrintf(COLOR_RED, "[  FAILED  ] ");
       printf("%s.%s", test_case.name(), test_info.name());
-      if (test_case.comment()[0] != '\0' ||
-          test_info.comment()[0] != '\0') {
-        printf(", where %s", test_case.comment());
-        if (test_case.comment()[0] != '\0' &&
-            test_info.comment()[0] != '\0') {
-          printf(" and ");
-        }
-      }
-      printf("%s\n", test_info.comment());
+      PrintFullTestCommentIfPresent(test_info);
+      printf("\n");
     }
   }
 }
@@ -3602,7 +3566,11 @@ void UnitTest::AddTestPartResult(TestPartResult::Type result_type,
       // the --gtest_catch_exceptions flags are specified.
       DebugBreak();
 #else
-      *static_cast<int*>(NULL) = 1;
+      // Dereference NULL through a volatile pointer to prevent the compiler
+      // from removing. We use this rather than abort() or __builtin_trap() for
+      // portability: Symbian doesn't implement abort() well, and some debuggers
+      // don't correctly trap abort().
+      *static_cast<volatile int*>(NULL) = 1;
 #endif  // GTEST_OS_WINDOWS
     } else if (GTEST_FLAG(throw_on_failure)) {
 #if GTEST_HAS_EXCEPTIONS
@@ -3993,7 +3961,9 @@ int UnitTestImpl::RunAllTests() {
   // Repeats forever if the repeat count is negative.
   const bool forever = repeat < 0;
   for (int i = 0; forever || i != repeat; i++) {
-    ClearResult();
+    // We want to preserve failures generated by ad-hoc test
+    // assertions executed before RUN_ALL_TESTS().
+    ClearNonAdHocTestResult();
 
     const TimeInMillis start = GetTimeInMillis();
 
