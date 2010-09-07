@@ -23,9 +23,6 @@
                     'include',
                 ],
             },
-            'dependencies': [
-                ':check-deps',
-            ],
         },
         {
             'target_name': 'gtest_main',
@@ -34,7 +31,6 @@
                 'src/gtest_main.cc',
             ],
             'dependencies': [
-                ':check-deps',
                 ':gtest',
             ],
             'export_dependent_settings': [
