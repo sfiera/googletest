@@ -1,10 +1,5 @@
 # -*- mode: python -*-
 
-DEFAULTS = {
-    "cxxflags": "-Wall -Werror",
-    "arch": "x86_64 i386 ppc",
-}
-
 def common(ctx):
     ctx.load("compiler_cxx")
     ctx.load("externals", "ext/waf-sfiera")
@@ -31,19 +26,25 @@ def build(bld):
             "src/gtest.cc",
         ],
         cxxflags="-Wall -Werror",
-        arch="x86_64 i386 ppc",
         includes=". ./include",
         export_includes="./include",
-        use="googletest/common",
+    )
+
+    bld.platform(
+        target="googletest/gtest",
+        platform="darwin",
+        arch="x86_64 i386 ppc",
     )
 
     bld.stlib(
         target="googletest/gtest_main",
         source="src/gtest_main.cc",
         cxxflags="-Wall -Werror",
+        use="googletest/gtest",
+    )
+
+    bld.platform(
+        target="googletest/gtest_main",
+        platform="darwin",
         arch="x86_64 i386 ppc",
-        use=[
-            "googletest/common",
-            "googletest/gtest",
-        ],
     )
