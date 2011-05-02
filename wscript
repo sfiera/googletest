@@ -10,6 +10,7 @@ def options(opt):
 
 def configure(cnf):
     common(cnf)
+    cnf.check(lib="pthread", uselib_store="googletest/system/pthread")
 
 def build(bld):
     common(bld)
@@ -28,6 +29,7 @@ def build(bld):
         cxxflags="-Wall -Werror",
         includes=". ./include",
         export_includes="./include",
+        use="googletest/system/pthread",
     )
 
     bld.platform(
