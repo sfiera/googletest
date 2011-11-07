@@ -16,6 +16,7 @@ def build(bld):
 
     bld.stlib(
         target="googletest/gtest",
+        features="universal",
         source=[
             "src/gtest-death-test.cc",
             "src/gtest-filepath.cc",
@@ -31,21 +32,10 @@ def build(bld):
         use="googletest/system/pthread",
     )
 
-    bld.platform(
-        target="googletest/gtest",
-        platform="darwin",
-        arch="x86_64 i386 ppc",
-    )
-
     bld.stlib(
         target="googletest/gtest_main",
+        features="universal",
         source="src/gtest_main.cc",
         cxxflags="-Wall -Werror",
         use="googletest/gtest",
-    )
-
-    bld.platform(
-        target="googletest/gtest_main",
-        platform="darwin",
-        arch="x86_64 i386 ppc",
     )
