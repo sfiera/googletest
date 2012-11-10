@@ -27,6 +27,7 @@ def build(bld):
             "src/gtest.cc",
         ],
         cxxflags="-Wall -Werror",
+        defines="GTEST_USE_OWN_TR1_TUPLE",
         includes=". ./include",
         export_includes="./include",
         use="googletest/system/pthread",
@@ -37,5 +38,6 @@ def build(bld):
         features="universal",
         source="src/gtest_main.cc",
         cxxflags="-Wall -Werror",
+        defines="GTEST_USE_OWN_TR1_TUPLE",
         use="googletest/gtest",
     )
